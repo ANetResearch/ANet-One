@@ -1,0 +1,75 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "ANet Desktop: Main",
+      "type": "pwa-node",
+      "request": "attach",
+      "port": 9231,
+      "preLaunchTask": "anet: start electron (debug)",
+      "restart": true,
+      "timeout": 30000,
+      "outFiles": ["${workspaceFolder}/packages/desktop/out/**/*.js"],
+      "resolveSourceMapLocations": [
+        "${workspaceFolder}/packages/desktop/out/**/*.js",
+        "!**/node_modules/**"
+      ],
+      "skipFiles": ["<node_internals>/**"],
+      "autoAttachChildProcesses": true,
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "ANet Desktop: Main (with host inspect)",
+      "type": "pwa-node",
+      "request": "attach",
+      "port": 9231,
+      "preLaunchTask": "anet: start electron (debug with host inspect)",
+      "restart": true,
+      "timeout": 30000,
+      "outFiles": ["${workspaceFolder}/packages/desktop/out/**/*.js"],
+      "resolveSourceMapLocations": [
+        "${workspaceFolder}/packages/desktop/out/**/*.js",
+        "!**/node_modules/**"
+      ],
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "ANet Desktop: Renderer",
+      "type": "pwa-chrome",
+      "request": "attach",
+      "port": 9229,
+      "webRoot": "${workspaceFolder}/packages/desktop/src/renderer",
+      "timeout": 30000
+    },
+    {
+      "name": "ANet Desktop: Host",
+      "type": "pwa-node",
+      "request": "attach",
+      "port": 9230,
+      "restart": true,
+      "timeout": 30000,
+      "skipFiles": ["<node_internals>/**"],
+      "outFiles": ["${workspaceFolder}/packages/desktop/out/**/*.js"],
+      "resolveSourceMapLocations": [
+        "${workspaceFolder}/packages/desktop/out/**/*.js",
+        "!**/node_modules/**"
+      ]
+    }
+  ],
+  "compounds": [
+    {
+      "name": "ANet Desktop: F5",
+      "configurations": ["ANet Desktop: Main", "ANet Desktop: Renderer"],
+      "stopAll": true
+    },
+    {
+      "name": "ANet Desktop: F5 (with host inspect)",
+      "configurations": [
+        "ANet Desktop: Main (with host inspect)",
+        "ANet Desktop: Renderer",
+        "ANet Desktop: Host"
+      ],
+      "stopAll": true
+    }
+  ]
+}

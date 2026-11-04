@@ -1,0 +1,9 @@
+{
+  "name": "restore-legacy-sessions",
+  "version": "0.1.0",
+  "description": "Select and restore legacy ACP-era ANet sessions into the new ANet task and session store.",
+  "author": { "name": "Agent Network" },
+  "license": "MIT",
+  "skills": "skills",
+  "commands": "commands"
+}

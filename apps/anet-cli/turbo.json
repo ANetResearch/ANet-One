@@ -1,0 +1,99 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "!dist/**", "!.turbo/**"],
+      "outputs": ["dist/**"],
+      "cache": true
+    },
+    "build:desktop-agent": {
+      "dependsOn": [
+        "@anet/shared-types#build",
+        "@anet/contracts#build",
+        "@anet/dynamic-workflow#build",
+        "@anet/core#build",
+        "@anet/adapters#build",
+        "@anet/bootstrap#build",
+        "@anet/i18n#build"
+      ],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/package.json",
+        "$TURBO_ROOT$/.env",
+        "$TURBO_ROOT$/../../packages/shared/package.json",
+        "$TURBO_ROOT$/../../packages/shared/src/**",
+        "!dist/**",
+        "!.turbo/**",
+        "$TURBO_ROOT$/../../config/provider/anet-builtin.json",
+        "$TURBO_ROOT$/../../config/provider/anet-builtin.test.json",
+        "$TURBO_ROOT$/../../scripts/builtin-provider-config.mjs",
+        "$TURBO_ROOT$/../../packages/provider/src/**",
+        "$TURBO_ROOT$/../../packages/provider-node/src/anet-builtin-release.ts",
+        "$TURBO_ROOT$/../../packages/model-option-map/src/**",
+        "$TURBO_ROOT$/../../.env",
+        "$TURBO_ROOT$/../../.env.production",
+        "$TURBO_ROOT$/../../.env.development",
+        "$TURBO_ROOT$/../../.env.development.local",
+        "$TURBO_ROOT$/../../package.json",
+        "$TURBO_ROOT$/../../pnpm-lock.yaml"
+      ],
+      "outputs": ["dist/**"],
+      "cache": true,
+      "env": ["ANET_ENV", "NODE_ENV"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "inputs": ["**"],
+      "env": ["ANET_CUA_REPO", "VITEST_MAX_WORKERS"],
+      "outputs": []
+    },
+    "coverage": {
+      "dependsOn": ["build"],
+      "inputs": ["**"],
+      "outputs": ["coverage/**"]
+    },
+    "lint": {},
+    "lint:fix": {},
+    "typecheck": {
+      "dependsOn": ["^build"]
+    },
+    "clean": {
+      "cache": false
+    },
+    "@anet/browser-use-plugin#build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "!dist/**", "!.turbo/**", "!scripts/browser-client.mjs"],
+      "outputs": ["dist/**", "scripts/browser-client.mjs"],
+      "cache": true
+    },
+    "@anet/cli#build": {
+      "dependsOn": ["^build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!dist/**",
+        "!.turbo/**",
+        "$TURBO_ROOT$/../../config/provider/anet-builtin.json",
+        "$TURBO_ROOT$/../../config/provider/anet-builtin.test.json",
+        "$TURBO_ROOT$/../../scripts/builtin-provider-config.mjs",
+        "$TURBO_ROOT$/../../packages/provider/src/**",
+        "$TURBO_ROOT$/../../packages/provider-node/src/anet-builtin-release.ts",
+        "$TURBO_ROOT$/../../packages/model-option-map/src/**",
+        "$TURBO_ROOT$/../../packages/shared/src/**",
+        "$TURBO_ROOT$/../../.env",
+        "$TURBO_ROOT$/../../.env.production",
+        "$TURBO_ROOT$/../../.env.development",
+        "$TURBO_ROOT$/../../.env.development.local",
+        "$TURBO_ROOT$/../../package.json",
+        "$TURBO_ROOT$/../../pnpm-lock.yaml"
+      ],
+      "outputs": ["dist/**"],
+      "cache": true,
+      "env": ["ANET_ENV", "NODE_ENV"]
+    }
+  }
+}

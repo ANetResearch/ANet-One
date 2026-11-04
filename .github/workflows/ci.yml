@@ -1,0 +1,130 @@
+# 提交与 PR 的检查。四项,各自独立失败(fail-fast: false):
+#   fmt            代码格式
+#   typecheck      全仓类型检查
+#   engineering    工程测试套件
+#   terminal-agent 终端 Agent 测试
+#
+# 四项都不访问网络服务,也不需要任何密钥。
+#
+# 每项都有 timeout-minutes。终端 Agent 的测试进程依赖文件监视器,监视器若以
+# persistent 模式创建,进程跑完用例也不会退出;硬超时保证这类情况是超时失败,
+# 而不是占住 runner。
+
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同一分支的新提交取消上一轮未完成的检查。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 与 release.yml 保持一致:构建期可选能力一律关闭。
+  ANET_ARMS_RUM_ENDPOINT: ""
+  ANET_TELEMETRY_REPORT_ENDPOINT: ""
+  ANET_AUTO_UPDATE: "0"
+  NATIVE_SEARCH_TOOLS_ARTIFACT_SOURCE: repository
+  HUSKY: "0"
+
+jobs:
+  check:
+    name: ${{ matrix.name }}
+    # 钉死镜像而不是 ubuntu-latest:playwright-core 1.59.1 没有 ubuntu26.04-x64 的
+    # chromium 构建(`playwright install chromium` 直接报
+    # "does not support chromium on ubuntu26.04-x64"),而 ubuntu-latest 已经指向
+    # 26.04。工具链是钉死的,跑它的机器也必须钉死,否则镜像换代就是一次无关的红。
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: fmt
+            timeout: 15
+            build: false
+            run: pnpm run fmt:check
+          - name: typecheck
+            timeout: 30
+            build: false
+            run: pnpm run typecheck
+          - name: engineering
+            timeout: 45
+            build: true
+            run: pnpm run test:engineering
+          # 这一道串行跑 34 个包(包脚本里的 turbo --concurrency=1):包并行时
+          # vitest 按 CPU-1 开 worker,多个包同时跑会把核数超订若干倍,表现为随机失败。
+          # dmax(64 核)上 cache-cold 13m44s;托管 runner 核更少、单核更慢,给 90 分钟。
+          #
+          # 必须从仓库根用 --filter,不能 `cd apps/anet-cli && pnpm test`:本仓库
+          # .npmrc 是 node-linker=hoisted,turbo 只在根的 node_modules/.bin 里,
+          # 子目录执行包脚本时 PATH 里没有它,会 `turbo: not found`。
+          - name: terminal-agent
+            timeout: 90
+            build: true
+            browser: true
+            run: pnpm --filter anet-cli run test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      # 与 release.yml 同一理由:pnpm 在 node-linker=hoisted 下并发跑 postinstall 时
+      # 偶发 `ENOENT: rename _tmp_... -> esbuild`,是竞争而非确定性失败,重试一次。
+      - name: Install
+        run: pnpm install --frozen-lockfile || pnpm install --frozen-lockfile
+
+      # 工程套件与终端 Agent 都从源码 import 工作区包,而这些包的入口指向构建产物。
+      # 干净检出里没有产物,vite 会报 `Failed to resolve entry for package "@anet/contracts"`。
+      # fmt 与 typecheck 不需要,跳过以省时间。
+      #
+      # 两条都要跑:`build:bootstrap` 只建仓库根的 `packages/*`,而工程套件里有两条用例
+      # 在 `apps/anet-cli/packages/bootstrap/tests/` 下,它们 import 的 `@anet/contracts`
+      # 与 `@anet/adapters/auth` 属于 `apps/anet-cli/packages/*`,要由 anet-cli 自己的
+      # turbo 构建产出。
+      - name: Build workspace packages
+        if: matrix.build
+        run: |
+          pnpm run build:bootstrap
+          # packages/shared 没有 build 脚本,它的 dist/ 是 `tsc -b` 的产物
+          # (tsconfig.json 的 outDir 指向 dist)。apps/anet-cli 的 SEA 用例要求
+          # 工作区包有 dist/index.js(sea-runtime-package-resolution.mjs:38),
+          # 而根 typecheck 虽然会顺带产出它,却跑在另一个 job、另一台 runner 上,
+          # 产物不会传过来。这里显式构建,不依赖别的 job 的副产物。
+          pnpm exec tsc -b packages/shared
+          pnpm --filter anet-cli run build
+
+      # browser-use-plugin 的真浏览器用例按"有浏览器就跑"的条件开启
+      # (test/headless-browser.e2e.test.ts:23)。resolveInstalledBrowserExecutable
+      # 优先用 playwright 自带的 chromium,找不到才退回系统路径
+      # (/usr/bin/google-chrome 等)。托管 runner 镜像自带 Google Chrome,于是这条
+      # 用例在没人安排的情况下跑了起来,而且跑在一个代码并不支持的组合上:
+      # playwright-core 1.59 驱动 ubuntu-26.04 镜像里的新版 Chrome,launch 卡在
+      # CDP 握手上,30 秒超时且没有错误信息。同一条用例在 dmax 上用 playwright
+      # 自带的 chromium 跑 1.6 秒通过(双核限制下也是 1.7 秒),所以不是机器慢。
+      #
+      # 这里把浏览器显式装成钉死的那一个,并用 ANET_HEADLESS_BROWSER_E2E_REQUIRED
+      # 把"找不到浏览器"从静默跳过改成失败 —— 否则这条覆盖会再一次悄悄消失。
+      # 不加 --with-deps:runner 镜像已自带 Chrome,系统库齐全,而 playwright 1.59
+      # 的依赖清单不认识 ubuntu-26.04。
+      - name: Install the pinned Chromium
+        if: matrix.browser
+        run: node node_modules/playwright-core/cli.js install chromium
+
+      - name: ${{ matrix.name }}
+        run: ${{ matrix.run }}
+        env:
+          ANET_HEADLESS_BROWSER_E2E_REQUIRED: ${{ matrix.browser && '1' || '' }}

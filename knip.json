@@ -1,0 +1,8 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "tags": ["-lintignore"],
+  "workspaces": {
+    ".": {}
+  },
+  "ignore": [".agents/**", ".claude/**", "packages/ui/src/components/**"]
+}

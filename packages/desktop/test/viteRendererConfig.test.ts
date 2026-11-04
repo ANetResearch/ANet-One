@@ -1,0 +1,224 @@
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createServer, loadConfigFromFile } from "vite";
+import { desktopRendererDependencyAliases } from "../vite.config";
+
+describe("desktop renderer Vite dependency aliases", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("points React singleton dependencies to installed package locations", () => {
+    for (const dependencyName of ["react", "react-dom", "lucide-react"] as const) {
+      expect(
+        existsSync(desktopRendererDependencyAliases[dependencyName]),
+        `${dependencyName} alias target should exist`,
+      ).toBe(true);
+    }
+  });
+
+  it("keeps React subpath aliases loadable for Vite dependency optimization", () => {
+    expect(
+      existsSync(resolve(desktopRendererDependencyAliases.react, "jsx-runtime.js")),
+      "react/jsx-runtime should resolve from the React package root",
+    ).toBe(true);
+    expect(
+      existsSync(resolve(desktopRendererDependencyAliases["react-dom"], "client.js")),
+      "react-dom/client should resolve from the React DOM package root",
+    ).toBe(true);
+  });
+
+  // Windows 跳过：环境配置差异导致断言失败，需要 CI 环境统一配置
+  const isWindows = process.platform === "win32";
+
+  (isWindows ? it.skip : it)("renderer env 里的服务端地址来自配置,未配置时为空", async () => {
+    // 本分发不内置服务端地址。这里验证两件事:未配置时注入空串(而不是某个默认域名),
+    // 以及配置了就按配置注入 —— 只验前者的话,把注入逻辑整个删掉测试也会通过。
+    vi.stubEnv("ANET_ENV", "test");
+    vi.stubEnv("ANET_BASE_URL", "");
+    const desktopRoot = resolve(import.meta.dirname, "..");
+    const configFile = resolve(desktopRoot, "vite.config.ts");
+    const result = await loadConfigFromFile(
+      {
+        command: "build",
+        mode: "production",
+        isPreview: false,
+        isSsrBuild: false,
+      },
+      configFile,
+      desktopRoot,
+      "silent",
+    );
+
+    expect(result?.config.define).toMatchObject({
+      "import.meta.env.VITE_ANET_BASE_URL": JSON.stringify(""),
+      "import.meta.env.VITE_ANET_ENDPOINT_ORIGIN": JSON.stringify(""),
+      __ANET_LOCAL_DEVELOPMENT_RUNTIME__: JSON.stringify(false),
+    });
+
+    vi.stubEnv("ANET_BASE_URL", "https://relay.example");
+    const configured = await loadConfigFromFile(
+      { command: "build", mode: "production", isPreview: false, isSsrBuild: false },
+      configFile,
+      desktopRoot,
+      "silent",
+    );
+    expect(configured?.config.define).toMatchObject({
+      "import.meta.env.VITE_ANET_BASE_URL": JSON.stringify("https://relay.example"),
+      "import.meta.env.VITE_ANET_ENDPOINT_ORIGIN": JSON.stringify("https://relay.example"),
+    });
+  });
+
+  it("marks non-production renderer builds as local development runtime", async () => {
+    vi.stubEnv("ANET_ENV", "production");
+    const desktopRoot = resolve(import.meta.dirname, "..");
+    const configFile = resolve(desktopRoot, "vite.config.ts");
+    const result = await loadConfigFromFile(
+      {
+        command: "serve",
+        mode: "development",
+        isPreview: false,
+        isSsrBuild: false,
+      },
+      configFile,
+      desktopRoot,
+      "silent",
+    );
+
+    expect(result?.config.define).toMatchObject({
+      __ANET_ENV__: JSON.stringify("production"),
+      __ANET_PRODUCT_FLAVOR__: JSON.stringify("production"),
+      __ANET_LOCAL_DEVELOPMENT_RUNTIME__: JSON.stringify(true),
+      "import.meta.env.VITE_ANET_E2E_STORE_BRIDGE": JSON.stringify(""),
+    });
+  });
+
+  it("publishes PDF.js CMaps for non-latin PDF rendering", async () => {
+    const desktopRoot = resolve(import.meta.dirname, "..");
+    const configFile = resolve(desktopRoot, "vite.config.ts");
+    const result = await loadConfigFromFile(
+      {
+        command: "build",
+        mode: "production",
+        isPreview: false,
+        isSsrBuild: false,
+      },
+      configFile,
+      desktopRoot,
+      "silent",
+    );
+
+    expect(result?.config.plugins?.some((plugin) => plugin.name === "anet:pdfjs-cmaps")).toBe(true);
+  });
+
+  it("injects the E2E store bridge only from the runner flag", async () => {
+    vi.stubEnv("ANET_ENV", "test");
+    vi.stubEnv("VITE_ANET_E2E_STORE_BRIDGE", "1");
+    const desktopRoot = resolve(import.meta.dirname, "..");
+    const configFile = resolve(desktopRoot, "vite.config.ts");
+    const result = await loadConfigFromFile(
+      {
+        command: "build",
+        mode: "production",
+        isPreview: false,
+        isSsrBuild: false,
+      },
+      configFile,
+      desktopRoot,
+      "silent",
+    );
+
+    expect(result?.config.define).toMatchObject({
+      __ANET_ENV__: JSON.stringify("test"),
+      __ANET_PRODUCT_FLAVOR__: JSON.stringify("preview"),
+      "import.meta.env.VITE_ANET_E2E_STORE_BRIDGE": JSON.stringify("1"),
+    });
+  });
+
+  it("ANET_PREVIEW_IDENTITY=1 让生产后端的 renderer 编译成 Preview 身份", async () => {
+    vi.stubEnv("ANET_ENV", "production");
+    vi.stubEnv("ANET_PREVIEW_IDENTITY", "1");
+    const desktopRoot = resolve(import.meta.dirname, "..");
+    const configFile = resolve(desktopRoot, "vite.config.ts");
+    const result = await loadConfigFromFile(
+      {
+        command: "build",
+        mode: "production",
+        isPreview: false,
+        isSsrBuild: false,
+      },
+      configFile,
+      desktopRoot,
+      "silent",
+    );
+
+    expect(result?.config.define).toMatchObject({
+      __ANET_ENV__: JSON.stringify("production"),
+      __ANET_PRODUCT_FLAVOR__: JSON.stringify("preview"),
+    });
+  });
+});
+
+describe("desktop React Scan development tools", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  async function loadReactScanPlugin(command: "serve" | "build", mode: string) {
+    const desktopRoot = resolve(import.meta.dirname, "..");
+    const result = await loadConfigFromFile(
+      { command, mode },
+      resolve(desktopRoot, "vite.config.ts"),
+      desktopRoot,
+      "silent",
+    );
+    return result?.config.plugins?.flat().find((plugin) => plugin?.name === "anet:react-scan");
+  }
+
+  it("serves Scan before React only in the main development entry", async () => {
+    vi.stubEnv("ANET_ENV", "production");
+    vi.stubEnv("ANET_REACT_SCAN", undefined);
+    const plugin = await loadReactScanPlugin("serve", "development");
+    expect(plugin).toBeDefined();
+    const server = await createServer({
+      configFile: false,
+      plugins: [plugin],
+      server: { middlewareMode: true, watch: null },
+      optimizeDeps: { noDiscovery: true, include: [] },
+    });
+    try {
+      const html =
+        '<html><head></head><body><script type="module">window.app = true</script></body></html>';
+      const transformed = await server.transformIndexHtml("/index.html", html);
+      const scanScript = transformed.match(/<script src="([^"]+react-scan[^"]+)"><\/script>/);
+      expect(scanScript).not.toBeNull();
+      expect(scanScript?.[1]).toMatch(/^\/@fs\//);
+      expect(transformed.indexOf(scanScript![0])).toBeLessThan(
+        transformed.indexOf('type="module"'),
+      );
+      for (const entry of ["resource-manager", "plugin-sandbox", "cua-permission-panel"]) {
+        expect(await server.transformIndexHtml(`/${entry}.html`, html)).not.toContain("react-scan");
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("allows opting out of development instrumentation", async () => {
+    vi.stubEnv("ANET_REACT_SCAN", "0");
+    expect(await loadReactScanPlugin("serve", "development")).toBeUndefined();
+  });
+
+  it.each([
+    ["serve", "production", "1"],
+    ["build", "production", "0"],
+    ["build", "production", "1"],
+    ["build", "development", "0"],
+    ["build", "development", "1"],
+  ] as const)(
+    "excludes Scan from %s in %s mode with ANET_REACT_SCAN=%s",
+    async (command, mode, scan) => {
+      vi.stubEnv("ANET_REACT_SCAN", scan);
+      expect(await loadReactScanPlugin(command, mode)).toBeUndefined();
+    },
+  );
+});

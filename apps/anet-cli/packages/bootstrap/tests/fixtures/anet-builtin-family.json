@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "config": {
+    "providerConfigRules": {
+      "templateRules": [
+        {
+          "templateId": "family-b-api",
+          "templateNameMap": {
+            "zh-CN": "Family B API",
+            "en-US": "Family B API"
+          },
+          "config": {
+            "access": {
+              "type": "api-key"
+            },
+            "api": {
+              "type": "anthropic-messages",
+              "baseUrl": "https://api.family-b.invalid"
+            },
+            "builtinModelIds": [
+              "model-a",
+              "model-b"
+            ]
+          }
+        }
+      ],
+      "providerRules": [
+        {
+          "providerId": "account:family-b-start-plan",
+          "config": {
+            "group": "family-b-family",
+            "visibility": "visible",
+            "access": {
+              "type": "provider-account",
+              "accountType": "family-b",
+              "mode": "start-plan"
+            },
+            "api": {
+              "type": "anthropic-messages",
+              "baseUrl": "https://start.family-b.invalid"
+            },
+            "builtinModelIds": [
+              "Model-A",
+              "Model-B",
+              "Model-C"
+            ]
+          }
+        },
+        {
+          "providerId": "account:family-b-offpeak-idle-plan",
+          "config": {
+            "group": "family-b-family",
+            "visibility": "hidden",
+            "access": {
+              "type": "provider-account",
+              "accountType": "family-b",
+              "mode": "off-peak"
+            },
+            "api": {
+              "type": "anthropic-messages",
+              "baseUrl": "https://offpeak.family-b.invalid"
+            },
+            "builtinModelIds": [
+              "Model-A"
+            ]
+          }
+        },
+        {
+          "providerId": "account:family-a-individual-coding-plan",
+          "config": {
+            "group": "family-a-family",
+            "visibility": "visible",
+            "access": {
+              "type": "provider-account",
+              "accountType": "family-a",
+              "mode": "individual-coding-plan"
+            },
+            "api": {
+              "type": "anthropic-messages",
+              "baseUrl": "https://individual.family-a.invalid"
+            },
+            "builtinModelIds": [
+              "Model-A",
+              "Model-B"
+            ]
+          }
+        },
+        {
+          "providerId": "account:family-a-team-coding-plan",
+          "config": {
+            "group": "family-a-family",
+            "visibility": "visible",
+            "access": {
+              "type": "provider-account",
+              "accountType": "family-a",
+              "mode": "team-coding-plan"
+            },
+            "api": {
+              "type": "anthropic-messages",
+              "baseUrl": "https://team.family-a.invalid"
+            },
+            "builtinModelIds": [
+              "Model-A",
+              "Model-B"
+            ]
+          }
+        }
+      ]
+    },
+    "modelConfigRules": {
+      "modelRules": [
+        {
+          "modelMatch": ".*",
+          "config": {
+            "enabled": true,
+            "properties": {
+              "contextWindow": 200000,
+              "inputFormat": {
+                "supportsText": true,
+                "supportsImage": false,
+                "supportsVideo": false,
+                "supportsAudio": false,
+                "supportsPdf": false
+              },
+              "outputFormat": {
+                "supportsText": true
+              },
+              "supportsToolCall": true,
+              "supportsJsonSchemaOutput": false,
+              "supportsNativeWebSearch": false,
+              "supportsMidConversationSystem": false,
+              "requiresMfjsToolSchema": false
+            },
+            "optionSpecs": {
+              "maxOutputTokens": {
+                "max": 64000,
+                "map": "{'max_tokens': maxOutputTokens}"
+              },
+              "reasoningLevel": {
+                "values": [
+                  "none",
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "map": "{}"
+              }
+            }
+          }
+        }
+      ],
+      "modelApiRules": [],
+      "providerSiteRules": [],
+      "templateModelRules": [],
+      "builtinProviderModelRules": []
+    }
+  }
+}

@@ -1,0 +1,223 @@
+# 发布多平台安装包。
+#
+# 为什么用 CI 而不是本机构建:macOS 的 dmg/zip 必须在 macOS 上打,Windows 的 NSIS
+# 安装器需要 Windows(在 Linux 上要 wine,且签名链不完整)。各平台用对应的 runner
+# 构建,产物汇总到同一个 Release。
+#
+# 发布三个目标:macos-arm64、windows-x64、linux-x64。不发 macOS Intel(macos-x64):
+# Intel Mac 已退出在售机型,且该架构只能在 Intel runner 上打,维护一条没人下载的
+# 构建线不划算。需要时在本机用 electron-builder --mac --x64 自行打包。
+#
+# 本仓库是公开仓库,GitHub Actions 对公开仓库的标准 runner 不计分钟数,因此手动运行
+# 默认跑全部平台。只想快速验证流水线时手动选 linux,只要 CLI bundle 时选 cli-only。
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "构建哪些平台"
+        type: choice
+        options:
+          - all
+          - linux
+          - cli-only
+        default: all
+      publish:
+        description: "构建完成后创建 draft Release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  # 构建期可选能力一律关闭:本分发不内置事件上报、ARMS RUM 与自动更新源。
+  ANET_ARMS_RUM_ENDPOINT: ""
+  ANET_TELEMETRY_REPORT_ENDPOINT: ""
+  ANET_AUTO_UPDATE: "0"
+  ANET_ENV: production
+  # 仓库内置 native search 的预编译归档,CI 不访问任何内网镜像。
+  NATIVE_SEARCH_TOOLS_ARTIFACT_SOURCE: repository
+  HUSKY: "0"
+
+jobs:
+  desktop:
+    name: desktop (${{ matrix.label }})
+    if: inputs.targets != 'cli-only'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-x64
+            only_on_all: false
+            builder_args: "--linux AppImage deb"
+            artifact_glob: |
+              packages/desktop/dist/*.AppImage
+              packages/desktop/dist/*.deb
+          - os: macos-14
+            label: macos-arm64
+            only_on_all: true
+            builder_args: ""
+            artifact_glob: |
+              packages/desktop/dist/*.dmg
+              packages/desktop/dist/*.zip
+          - os: windows-latest
+            label: windows-x64
+            only_on_all: true
+            builder_args: ""
+            artifact_glob: |
+              packages/desktop/dist/*.exe
+    steps:
+      # 只在 linux 运行时跳过 macOS 与 Windows。用 step 级判断而不是矩阵表达式,
+      # 是因为 push tag 触发时 inputs.targets 为空,此时三个平台都要跑。
+      - name: Resolve whether this target runs
+        id: gate
+        shell: bash
+        run: |
+          if [ "${{ matrix.only_on_all }}" = "true" ] && [ "${{ inputs.targets }}" = "linux" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.skip != 'true'
+
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.skip != 'true'
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable pnpm
+        if: steps.gate.outputs.skip != 'true'
+        run: corepack enable
+
+      # pnpm 在 node-linker=hoisted 下并发跑 postinstall 时偶发
+      # `ENOENT: rename _tmp_... -> esbuild`。同一轮里 cli job 装成功、desktop job 装失败,
+      # 说明是竞争而不是确定性失败,所以重试一次而不是改依赖。
+      - name: Install
+        if: steps.gate.outputs.skip != 'true'
+        shell: bash
+        run: pnpm install --frozen-lockfile || pnpm install --frozen-lockfile
+
+      - name: Build workspace packages
+        if: steps.gate.outputs.skip != 'true'
+        run: pnpm run build:bootstrap
+
+      # `@anet/desktop run build` = prepare:runtime-assets + prepare:build-meta +
+      # tsup + vite build。四步都要跑:主进程/渲染进程的产物在 out/**,
+      # buildMetadata 由 prepare:build-meta 生成,electron-builder 封装的就是这两样。
+      - name: Build desktop app bundles
+        if: steps.gate.outputs.skip != 'true'
+        run: pnpm --filter @anet/desktop run build
+
+      # Linux 只出 AppImage 与 deb。配置里默认还有 rpm 和 pacman,
+      # 而 pacman 要 bsdtar —— ubuntu runner 上没有,fpm 以 exit 127 失败,
+      # 连带把已经打好的 AppImage/deb 一起判为构建失败。要 rpm/pacman 的话
+      # 得先在 runner 上装 libarchive-tools,现在没人要,不如不打。
+      - name: Package installers
+        if: steps.gate.outputs.skip != 'true'
+        working-directory: packages/desktop
+        shell: bash
+        run: pnpm exec electron-builder --config electron-builder.config.js ${{ matrix.builder_args }} --publish never
+
+      - uses: actions/upload-artifact@v4
+        if: steps.gate.outputs.skip != 'true'
+        with:
+          name: anet-one-${{ matrix.label }}
+          path: ${{ matrix.artifact_glob }}
+          if-no-files-found: error
+
+  cli:
+    name: cli bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile || pnpm install --frozen-lockfile
+      # turbo 装在仓库根的 node_modules/.bin(node-linker=hoisted)。
+      # `pnpm --dir apps/anet-cli exec turbo` 在子目录里解析不到它,直接给绝对路径。
+      - name: Build CLI
+        working-directory: apps/anet-cli
+        run: |
+          "$GITHUB_WORKSPACE/node_modules/.bin/turbo" run build
+      # 必须连 provider/anet-builtin.json 一起发。CLI 在非 SEA 构建下只认两个位置:
+      # 入口同级的 provider/anet-builtin.json,以及仓库内的相对路径
+      # ../../../../../config/provider/anet-builtin.json。单独发一个 anet.cjs,
+      # 用户运行时第一行就是"无法定位 CLI ANet Built-in Provider Config"。
+      # Release 的附件是平铺的,存不下目录结构,所以打成 tar.gz。
+      - name: Stage CLI bundle
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          mkdir -p stage/provider out
+          cp apps/anet-cli/packages/cli/dist/anet.cjs stage/anet-one-cli.cjs
+          cp config/provider/anet-builtin.json stage/provider/anet-builtin.json
+          tar -czf "out/anet-one-cli-${VERSION}.tar.gz" -C stage anet-one-cli.cjs provider
+          cd out && sha256sum "anet-one-cli-${VERSION}.tar.gz" > "anet-one-cli-${VERSION}.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anet-one-cli
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: [desktop, cli]
+    # desktop 在 cli-only 下被跳过。GitHub Actions 对"依赖被跳过"的默认处理是把下游也
+    # 跳过,所以这里改成 always() 自行判定:cli 必须成功,desktop 允许跳过但不允许失败。
+    if: >-
+      always()
+      && needs.cli.result == 'success'
+      && needs.desktop.result != 'failure'
+      && needs.desktop.result != 'cancelled'
+      && (startsWith(github.ref, 'refs/tags/v') || inputs.publish)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Flatten
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          ls -la release
+      # draft:先建草稿而不是直接发布,产物对不对由人看过再按发布。
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          draft: true
+          body: |
+            ANet One —— 多平台 AI 工作台:桌面应用、浏览器界面、终端 Agent,
+            三种形态共享同一份会话与工作区。
+
+            | 平台 | 文件 |
+            | --- | --- |
+            | macOS (Apple Silicon) | `.dmg` |
+            | Windows x64 | `.exe` |
+            | Linux x64 | `.AppImage` / `.deb` |
+            | 终端 Agent | `anet-one-cli-<版本>.tar.gz`(需要 Node.js 24) |
+
+            终端 Agent:
+
+            ```bash
+            tar -xzf anet-one-cli-<版本>.tar.gz
+            node anet-one-cli.cjs -p "hello"
+            ```
+
+            解包后 `provider/` 要和 `anet-one-cli.cjs` 放在一起。
+
+            macOS 安装包未做公证,首次打开在「系统设置 → 隐私与安全性」里允许。
+
+            模型在「设置 → 模型供应商」里粘贴 token,任何 OpenAI 或 Anthropic
+            兼容端点都能接。

@@ -1,0 +1,145 @@
+import { resolve } from "node:path";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { readFile, writeFile } from "node:fs/promises";
+import { createFakeRelayV2 } from "@anet/shared/testing/fake-relay-v2";
+
+export const WEB_REMOTE_CONTROL_FIXTURE_CREDENTIALS = {
+  "oauth:active_provider": "family-b",
+  "oauth:family-b:access_token": "mock-token",
+  "oauth:family-b:user_info": JSON.stringify({
+    id: "anet-e2e-user",
+    username: "ANet E2E",
+    displayName: "ANet E2E",
+  }),
+  anetjwttoken: "mock-token",
+};
+
+/** 单窗口真实 OAuth owner → RPC → renderer → Main 回归，只替换外部 relay。 */
+export async function prepareWebRemoteControlSessionEventsFixture(options: {
+  credentialsFile: string;
+  settingsFile: string;
+  workspacePath: string;
+  webUrl?: string;
+  mobilePush?: boolean;
+}): Promise<() => Promise<void>> {
+  const relay = await createFakeRelayV2({
+    users: { "mock-token": "anet-e2e-user" },
+    onHttp: (call) => {
+      if (options.mobilePush && call.path === "/api/v1/remote/notification/status")
+        return {
+          status: 200,
+          body: {
+            code: 0,
+            data: { protocol_version: 1, event_transport: "http", status: "available" },
+          },
+        };
+      if (options.mobilePush && call.path === "/__e2e/push")
+        return {
+          status: 200,
+          body: {
+            messages: relay.messages,
+            queries: relay.httpCalls.filter((x) => x.path === "/api/v1/remote/notification/status")
+              .length,
+          },
+        };
+      if (call.path.startsWith("/api/v1/remote/")) return;
+      // 完整工作区会读取推荐场景；配置对象不能冒充场景数组，否则真实首页渲染会崩溃。
+      if (call.path === "/api/v1/client/scenes")
+        return { status: 200, body: { code: 0, msg: "", data: [] } };
+      if (options.webUrl && !call.path.includes("config"))
+        return {
+          status: 503,
+          body: { code: 503, msg: "not configured in mobile file-navigation fixture" },
+        };
+      return {
+        status: 200,
+        body: {
+          code: 0,
+          data: { configs: {}, builtinModels: [], config_version: "session-events" },
+        },
+      };
+    },
+  });
+  const envPatch = {
+    ...(options.webUrl ? { VITE_ANET_E2E_STORE_BRIDGE: "1" } : {}),
+    ANET_E2E_REMOTE_AUTH_GATE_URL: relay.httpUrl,
+    ANET_BASE_URL: relay.httpUrl,
+    ANET_ENDPOINT_ORIGIN: relay.httpUrl,
+    ANET_TEST_BASE_URL: relay.httpUrl,
+    ANET_WEB_REMOTE_CONTROL_RELAY_WS_URL: relay.wsUrl,
+    ANET_WEB_REMOTE_CONTROL_URL: options.webUrl ?? `${relay.httpUrl}/remote/v4`,
+  };
+  const previous = Object.fromEntries(Object.keys(envPatch).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, envPatch);
+  const webPort = options.webUrl ? new URL(options.webUrl).port : undefined;
+  // 手机入口与 desktop relay 必须连接同一个隔离服务，不能沿用开发服务器的线上代理。
+  const web = options.webUrl
+    ? spawn(
+        process.execPath,
+        [
+          resolve(import.meta.dirname, "../../../scripts/e2e-mobile-web-server.mjs"),
+          webPort || "5173",
+        ],
+        {
+          cwd: resolve(import.meta.dirname, "../../../../../packages/web"),
+          // 原因：wdio CLI 给 worker 注入 FORCE_COLOR="0"/"1"，picocolors 把任意非空值视为开启，
+          // vite 会把端口染色成 `127.0.0.1:\x1b[1m5173`，下方就绪匹配永远失败，worker 无限等待。
+          // NO_COLOR 优先于 FORCE_COLOR，保证就绪行是纯文本。
+          env: { ...process.env, NO_COLOR: "1" },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      )
+    : undefined;
+  if (web) {
+    await new Promise<void>((resolveReady, reject) => {
+      web.once("error", reject);
+      web.once("exit", (code) =>
+        reject(new Error(`Mobile Web fixture exited before ready: ${code}`)),
+      );
+      web.stdout.on("data", (chunk) => {
+        const origin = String(chunk).match(/http:\/\/127\.0\.0\.1:\d+/u)?.[0];
+        // Vite 的重载通知写 stdout；原来只读 ready 会丢失手机操作中断的来源。
+        // 只保留开发服务器生命周期，不转发页面控制台中的业务或配对数据。
+        for (const line of String(chunk).split("\n")) {
+          if (line.includes("[vite]") && !line.includes("[console."))
+            process.stderr.write(`[mobile-web-fixture] ${line}\n`);
+        }
+        if (!origin) return;
+        // 独立夹具可能避开已占用端口，手机配对必须使用 Vite 实际监听的端口。
+        process.env.ANET_WEB_REMOTE_CONTROL_URL = new URL(
+          new URL(options.webUrl!).pathname,
+          origin,
+        ).href;
+        resolveReady();
+      });
+      web.stderr.on("data", (chunk) => process.stderr.write(chunk));
+    });
+  }
+  await writeFile(options.credentialsFile, JSON.stringify(WEB_REMOTE_CONTROL_FIXTURE_CREDENTIALS), {
+    mode: 0o600,
+  });
+  const settings = JSON.parse(await readFile(options.settingsFile, "utf8"));
+  await writeFile(
+    options.settingsFile,
+    JSON.stringify({
+      ...settings,
+      anetEndpointOrigin: relay.httpUrl,
+      webRemoteControlLastEnabledContext: options.mobilePush
+        ? undefined
+        : { workspacePath: options.workspacePath },
+    }),
+  );
+  return async () => {
+    if (web && web.exitCode === null) {
+      const exited = once(web, "exit");
+      web.kill();
+      await exited;
+    }
+    await relay.close();
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+}
